@@ -13,7 +13,8 @@ module ActFluentLoggerRails
     def self.new(config_file: Rails.root.join("config", "fluent-logger.yml"),
                  log_tags: {},
                  settings: {},
-                 flush_immediately: false)
+                 flush_immediately: false,
+                 secondary_log: nil)
       Rails.application.config.log_tags = log_tags.values
       if Rails.application.config.respond_to?(:action_cable)
         Rails.application.config.action_cable.log_tags = log_tags.values.map do |x|
@@ -40,6 +41,7 @@ module ActFluentLoggerRails
           nanosecond_precision: fluent_config['nanosecond_precision'],
           messages_type: fluent_config['messages_type'],
           severity_key: fluent_config['severity_key'],
+          secondary_log: secondary_log,
         }
       end
 
@@ -79,6 +81,7 @@ module ActFluentLoggerRails
       port    = options[:port]
       host    = options[:host]
       nanosecond_precision = options[:nanosecond_precision]
+      @secondary_log = options[:secondary_log]
       @messages_type = (options[:messages_type] || :array).to_sym
       @tag = options[:tag]
       @severity_key = (options[:severity_key] || :severity).to_sym
@@ -145,7 +148,14 @@ module ActFluentLoggerRails
           @map[k] = v
         end
       end
+
       @fluent_logger.post(@tag, @map)
+
+      if @secondary_log
+        @secondary_log.add(@severity, @map)
+        @secondary_log.flush
+      end
+
       @severity = 0
       @messages.clear
       @tags = nil
