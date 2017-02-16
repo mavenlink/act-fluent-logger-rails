@@ -19,7 +19,9 @@ Gem::Specification.new do |gem|
   gem.require_paths = ["lib"]
 
   gem.add_development_dependency "rspec"
+  gem.add_development_dependency "rspec", '~> 3.5.0'
   gem.add_runtime_dependency "msgpack", "~> 1.0.3"
   gem.add_runtime_dependency "fluent-logger"
-  gem.add_runtime_dependency "rails", ">= 3.2.0", "< 5.0"
+  gem.add_runtime_dependency "railties", ">= 4", "< 5.1"
+  gem.add_runtime_dependency "activesupport", ">= 4", "< 5.1"
 end

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 require 'fluent-logger'
 require 'active_support/core_ext'
 require 'uri'
@@ -11,21 +10,48 @@ module ActFluentLoggerRails
     # Severity label for logging. (max 5 char)
     SEV_LABEL = %w(DEBUG INFO WARN ERROR FATAL ANY)
 
-    def self.new(config_file: Rails.root.join("config", "fluent-logger.yml"), log_tags: {}, secondary_log: nil, flush_immediately: false)
+    def self.new(config_file: Rails.root.join("config", "fluent-logger.yml"),
+                 log_tags: {},
+                 secondary_log: nil,
+                 flush_immediately: false)
+
       Rails.application.config.log_tags = [ ->(request) { request } ] unless log_tags.empty?
-      fluent_config = if ENV["FLUENTD_URL"]
-                        self.parse_url(ENV["FLUENTD_URL"])
-                      else
-                        YAML.load(ERB.new(config_file.read).result)[Rails.env]
-                      end
-      settings = {
-        tag:  fluent_config['tag'],
-        host: fluent_config['fluent_host'],
-        port: fluent_config['fluent_port'],
-        messages_type: fluent_config['messages_type'],
-        secondary_log: secondary_log,
-        flush_immediately: flush_immediately
-      }
+      #Rails.application.config.log_tags = log_tags.values
+
+      if Rails.application.config.respond_to?(:action_cable)
+        Rails.application.config.action_cable.log_tags = log_tags.values.map do |x|
+          case
+          when x.respond_to?(:call)
+            x
+          when x.is_a?(Symbol)
+            -> (request) { request.send(x) }
+          else
+            -> (request) { x }
+          end
+        end
+      end
+
+
+      if (0 == settings.length)
+        fluent_config = if ENV["FLUENTD_URL"]
+                          self.parse_url(ENV["FLUENTD_URL"])
+                        else
+                          YAML.load(ERB.new(config_file.read).result)[Rails.env]
+                        end
+
+        settings = {
+          tag:  fluent_config['tag'],
+          host: fluent_config['fluent_host'],
+          port: fluent_config['fluent_port'],
+          messages_type: fluent_config['messages_type'],
+          secondary_log: secondary_log,
+          flush_immediately: false, #TODO
+          severity_key: fluent_config['severity_key'],
+        }
+      end
+
+      settings[:flush_immediately] ||= false #flush_immediately
+
       level = SEV_LABEL.index(Rails.application.config.log_level.to_s.upcase)
       logger = ActFluentLoggerRails::FluentLogger.new(settings, level, log_tags)
       logger = ActiveSupport::TaggedLogging.new(logger)
@@ -40,12 +66,13 @@ module ActFluentLoggerRails
         fluent_host: uri.host,
         fluent_port: uri.port,
         tag: uri.path[1..-1],
-        messages_type: params["messages_type"].try(:first)
+        messages_type: params['messages_type'].try(:first),
+        severity_key: params['severity_key'].try(:first),
       }.stringify_keys
     end
 
     def tagged(*tags)
-      @request = tags[0][0]
+      @tags = tags.flatten
       yield self
     ensure
       flush
@@ -61,11 +88,14 @@ module ActFluentLoggerRails
       @flush_immediately = options[:flush_immediately]
       @messages_type = (options[:messages_type] || :array).to_sym
       @tag = options[:tag]
+      @severity_key = (options[:severity_key] || :severity).to_sym
+      @flush_immediately = options[:flush_immediately]
       @fluent_logger = ::Fluent::Logger::FluentLogger.new(nil, host: host, port: port)
       @severity = 0
       @messages = []
       @log_tags = log_tags
       @map = {}
+      after_initialize if respond_to? :after_initialize
     end
 
     def add(severity, message = nil, progname = nil, &block)
@@ -79,10 +109,16 @@ module ActFluentLoggerRails
     def add_message(severity, message)
       @severity = severity if @severity < severity
 
-      if message.is_a? Exception
-        error_message = message.message + "\n" + message.backtrace.join("\n") + "\n"
-        message = error_message
-      end
+      message =
+        case message
+        when ::String
+          message
+        when ::Exception
+          "#{ message.message } (#{ message.class })\n" <<
+            (message.backtrace || []).join("\n")
+        else
+          message.inspect
+        end
 
       if message.encoding == Encoding::UTF_8
         @messages << message
@@ -109,16 +145,11 @@ module ActFluentLoggerRails
                    @messages
                  end
       @map[:messages] = messages
-      @map[:level] = format_severity(@severity)
-      @log_tags.each do |k, v|
-        @map[k] = case v
-                  when Proc
-                    v.call(@request)
-                  when Symbol
-                    @request.send(v)
-                  else
-                    v
-                  end rescue :error
+      @map[@severity_key] = format_severity(@severity)
+      if @tags
+        @log_tags.keys.zip(@tags).each do |k, v|
+          @map[k] = v
+        end
       end
 
       @fluent_logger.post(@tag, @map)
@@ -126,6 +157,7 @@ module ActFluentLoggerRails
 
       @severity = 0
       @messages.clear
+      @tags = nil
       @map.clear
     end
 
